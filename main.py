@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form
-import sqlite3, io, cv2, numpy as np
+import sqlite3, io, cv2, numpy as np, shutil, os
+from pathlib import Path
 from PIL import Image
 import face_recognition
 
@@ -19,6 +20,7 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS students (
                     pen TEXT UNIQUE,
                     name TEXT,
                     embedding BLOB,
+                    photo_path TEXT,
                     FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE)""")
 
 cursor.execute("""CREATE TABLE IF NOT EXISTS attendance (
@@ -66,6 +68,7 @@ def delete_class(class_number: int = Form(...), section: str = Form(...)):
     conn.commit()
     return {"message": f"Class {class_number}-{section} deleted successfully"}
 
+# ✅ UPDATED ADD STUDENT ENDPOINT (with photo saving)
 @app.post("/add_student")
 async def add_student(class_id: int = Form(...), pen: str = Form(...), name: str = Form(...), file: UploadFile = File(...)):
     img = Image.open(io.BytesIO(await file.read())).convert("RGB")
@@ -75,13 +78,26 @@ async def add_student(class_id: int = Form(...), pen: str = Form(...), name: str
     if emb is None:
         return {"error": "No face detected"}
 
+    # Ensure uploads folder exists
+    UPLOAD_DIR = Path("uploads/students")
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Save uploaded photo
+    file_ext = Path(file.filename).suffix
+    file_name = f"{pen}{file_ext}"
+    save_path = UPLOAD_DIR / file_name
+    img.save(save_path)
+
     try:
-        cursor.execute("INSERT INTO students (class_id, pen, name, embedding) VALUES (?, ?, ?, ?)",
-                       (class_id, pen, name, emb.tobytes()))
+        cursor.execute(
+            "INSERT INTO students (class_id, pen, name, embedding, photo_path) VALUES (?, ?, ?, ?, ?)",
+            (class_id, pen, name, emb.tobytes(), str(save_path))
+        )
         conn.commit()
     except sqlite3.IntegrityError:
         return {"error": f"Student with PEN {pen} already exists"}
-    return {"message": f"Student {name} added to class {class_id}"}
+
+    return {"message": f"Student {name} added to class {class_id}", "photo": str(save_path)}
 
 @app.post("/upload_attendance")
 async def upload_attendance(class_id: int = Form(...), date: str = Form(...), file: UploadFile = File(...)):
@@ -119,9 +135,9 @@ async def upload_attendance(class_id: int = Form(...), date: str = Form(...), fi
 
 @app.get("/list_students")
 def list_students(class_id: int):
-    cursor.execute("SELECT pen, name FROM students WHERE class_id=?", (class_id,))
+    cursor.execute("SELECT pen, name, photo_path FROM students WHERE class_id=?", (class_id,))
     rows = cursor.fetchall()
-    return {"students": [{"pen": r[0], "name": r[1]} for r in rows]}
+    return {"students": [{"pen": r[0], "name": r[1], "photo": r[2]} for r in rows]}
 
 @app.post("/delete_student")
 def delete_student(pen: str = Form(...)):
